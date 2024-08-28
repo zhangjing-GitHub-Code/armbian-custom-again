@@ -29,6 +29,18 @@ ophub_release_file="/etc/ophub-release"
         echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The Tencent-Aurora-3Pro's btmtksdio module loaded successfully." >>${custom_log}
 }
 
+# For swan1-w28(rk3568) board USB power and switch contrl
+[[ "${FDT_FILE}" == "rk3568-swan1-w28.dtb" ]] && {
+    # USB 5V Power buick ON
+    gpioset 0 21=1 2>/dev/null
+    # USB3.0 Port ON
+    gpioset 3 20=1 2>/dev/null
+    # USB2.0 Port ON
+    gpioset 4 21=1 2>/dev/null
+    gpioset 4 22=1 2>/dev/null
+    echo "[$(date +"%Y.%m.%d.%H:%M:%S")] USB successfully enabled on Swan1-w28(rk3568)." >>${custom_log}
+}
+
 # Restart ssh service
 [[ -d "/var/run/sshd" ]] || mkdir -p -m0755 /var/run/sshd 2>/dev/null
 [[ -f "/etc/init.d/ssh" ]] && {
@@ -54,6 +66,18 @@ openvfd_boxid="15"
 [[ -x "/usr/bin/rgb-vplus" ]] && {
     rgb-vplus --RedName=RED --GreenName=GREEN --BlueName=BLUE 2>/dev/null &
     echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The LED of Vplus is enabled successfully." >>${custom_log}
+}
+
+# For fan control service
+[[ -x "/usr/bin/pwm-fan.pl" ]] && {
+    perl /usr/bin/pwm-fan.pl 2>/dev/null &
+    echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The fan control service enabled successfully." >>${custom_log}
+}
+
+# For pveproxy startup service
+[[ -n "$(dpkg -l | awk '{print $2}' | grep -w "^pve-manager$")" ]] && {
+    sudo systemctl restart pveproxy &&
+        echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The pveproxy service started successfully." >>${custom_log}
 }
 
 # Add custom log

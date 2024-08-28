@@ -26,6 +26,7 @@
 # software_307  : For kvm
 # software_308  : For pve
 # software_309  : For casaos
+# software_310  : For arozos
 #
 #============================================================================
 
@@ -51,7 +52,7 @@ software_303() {
         tmp_download="$(mktemp -d)"
         software_filename="${software_url##*/}"
         echo -e "${STEPS} Start downloading NPS..."
-        wget -q -P ${tmp_download} ${software_url}
+        curl -fsSL "${software_url}" -o "${tmp_download}/${software_filename}"
         [[ "${?}" -eq "0" && -s "${tmp_download}/${software_filename}" ]] || error_msg "Software download failed!"
         echo -e "${INFO} Software downloaded successfully: $(ls ${tmp_download} -l)"
 
@@ -97,7 +98,7 @@ software_304() {
         tmp_download="$(mktemp -d)"
         software_filename="${software_url##*/}"
         echo -e "${STEPS} Start downloading NPC..."
-        wget -q -P ${tmp_download} ${software_url}
+        curl -fsSL "${software_url}" -o "${tmp_download}/${software_filename}"
         [[ "${?}" -eq "0" && -s "${tmp_download}/${software_filename}" ]] || error_msg "Software download failed!"
         echo -e "${INFO} Software downloaded successfully: $(ls ${tmp_download} -l)"
 
@@ -133,7 +134,7 @@ software_305() {
     install)
         # Install basic dependencies
         echo -e "${STEPS} Start installing basic dependencies..."
-        software_install "wget curl gpg gnupg2 software-properties-common apt-transport-https lsb-release ca-certificates"
+        software_install "curl gpg gnupg2 software-properties-common apt-transport-https lsb-release ca-certificates"
 
         # Add Plex Media Server APT repository
         echo -e "${STEPS} Start adding the Plex Media Server APT repository..."
@@ -141,7 +142,7 @@ software_305() {
 
         # Import GPG key
         echo -e "${STEPS} Start importing GPG keys..."
-        wget https://downloads.plex.tv/plex-keys/PlexSign.key
+        curl -fsSOL https://downloads.plex.tv/plex-keys/PlexSign.key
         cat PlexSign.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/PlexSigkey.gpg
         rm -f PlexSign.key
 
@@ -191,7 +192,7 @@ software_306() {
         tmp_download="$(mktemp -d)"
         software_filename="${software_url##*/}"
         echo -e "${STEPS} Start downloading Emby Server..."
-        wget -q -P ${tmp_download} ${software_url}
+        curl -fsSL "${software_url}" -o "${tmp_download}/${software_filename}"
         [[ "${?}" -eq "0" && -s "${tmp_download}/${software_filename}" ]] || error_msg "Software download failed!"
         echo -e "${INFO} Software downloaded successfully: $(ls ${tmp_download} -l)"
 
@@ -344,6 +345,23 @@ software_308() {
     install)
         echo -e "${STEPS} Start installing PVE..."
 
+        # Add PVE software source
+        echo -e "${STEPS} Start adding [ ${VERSION_CODENAME} ] software source..."
+        if [[ "${VERSION_CODENAME}" == "bookworm" ]]; then
+            # Reference documentation: Cooip JM
+            echo "deb https://mirrors.apqa.cn/proxmox/debian/pve ${VERSION_CODENAME} port" >/etc/apt/sources.list.d/pveport.list
+            curl https://mirrors.apqa.cn/proxmox/debian/pveport.gpg -o /etc/apt/trusted.gpg.d/pveport.gpg
+        elif [[ "${VERSION_CODENAME}" == "bullseye" ]]; then
+            # Reference documentation: https://www.zhou.pp.ua/2023/08/08/n1/
+            echo "deb https://raw.githubusercontent.com/pimox/pimox7/master/ dev/" >/etc/apt/sources.list.d/pimox.list
+            curl https://raw.githubusercontent.com/pimox/pimox7/master/KEY.gpg | apt-key add -
+        else
+            error_msg "This version is not supported: [ ${VERSION_CODENAME} ]"
+        fi
+
+        # Declare PATH
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
         # Add network settings
         echo -e "${STEPS} Start adding network settings..."
         [[ -z "${my_network_card}" || -z "${my_mac}" || -z "${my_address}" || -z "${my_broadcast}" || -z "${my_netmask}" || -z "${my_gateway}" ]] && {
@@ -390,11 +408,6 @@ EOF
 ${my_address}	${my_hostname}
 EOF
 
-        # Add pimox7 software source KEY
-        echo -e "${STEPS} Start adding pimox7 software source..."
-        echo "deb https://raw.githubusercontent.com/pimox/pimox7/master/ dev/" >/etc/apt/sources.list.d/pimox.list
-        curl https://raw.githubusercontent.com/pimox/pimox7/master/KEY.gpg | apt-key add -
-
         echo -e "${STEPS} Start installing packages..."
         software_install "${pve_package_list}"
 
@@ -422,7 +435,19 @@ EOF
 
         # Install optional packages
         software_install "ifupdown2"
+        sudo ifup vmbr0 ${my_network_card}
         software_update
+
+        # Adjust the PVE web interface (Fix the PVE web interface certificate access)
+        echo -e "${INFO} Adjust certificate."
+        sudo rm -f /etc/pve/pve-root-ca.pem /etc/pve/priv/pve-root-ca.* /etc/pve/local/pve-ssl.*
+        sudo pvecm updatecerts -f
+
+        # Add startup service
+        echo -e "${INFO} Add pveproxy as a startup service."
+        sudo systemctl daemon-reload
+        sudo systemctl enable --now pveproxy
+        sudo systemctl restart pveproxy
 
         # Adjust sshd_config (Fix the SSH certificate access modified by PVE)
         [[ -L ~/.ssh/authorized_keys ]] && {
@@ -431,6 +456,16 @@ EOF
             sudo sed -i '/AuthorizedKeysFile/d' /etc/ssh/sshd_config
             sudo echo "AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys_2" >>/etc/ssh/sshd_config
             sudo /etc/init.d/ssh restart
+        }
+
+        # Fix log issue
+        [[ -f "/var/log/pveproxy/access.log" ]] || {
+            echo -e "${INFO} Fix the missing log issue."
+            sudo mkdir -p /var/log/pveproxy
+            sudo touch /var/log/pveproxy/access.log
+            sudo chown -R www-data:www-data /var/log/pveproxy/
+            sudo chmod -R 755 /var/log/pveproxy/
+            sudo systemctl restart pveproxy
         }
 
         sync && sleep 3
@@ -449,16 +484,51 @@ software_309() {
     case "${software_manage}" in
     install)
         echo -e "${STEPS} Start installing CasaOS..."
-        wget -qO- https://get.casaos.io | sudo bash
+        curl -fsSL https://get.casaos.io | sudo bash
 
         sync && sleep 3
-        echo -e "${NOTE} The CasaOS access address: [ http://${my_address}:81 ]"
+
+        # Get the CasaOS service port
+        CASA_CONF_PATH="/etc/casaos/gateway.ini"
+        CASA_PORT="$(grep "port" ${CASA_CONF_PATH} | awk -F "=" '{print $2}')"
+        [[ "${CASA_PORT}" -eq "80" ]] && my_casa_port="" || my_casa_port=":${CASA_PORT}"
+
+        echo -e "${NOTE} The CasaOS access address: [ http://${my_address}${my_casa_port} ]"
         echo -e "${SUCCESS} CasaOS installation successful."
         ;;
     update) software_update ;;
     remove)
         sudo casaos-uninstall
         echo -e "${SUCCESS} CasaOS uninstallation successful."
+        ;;
+    *) error_msg "Invalid input parameter: [ ${@} ]" ;;
+    esac
+}
+
+# For arozos
+software_310() {
+    case "${software_manage}" in
+    install)
+        echo -e "${STEPS} Start installing ArozOS..."
+        wget -O install.sh https://raw.githubusercontent.com/tobychui/arozos/master/installer/install.sh && bash install.sh
+
+        sync && sleep 3
+
+        echo -e "${SUCCESS} ArozOS installation successful."
+        ;;
+    update) software_update ;;
+    remove)
+        # Stop and disable the ArozOS service
+        sudo systemctl stop arozos.service 2>/dev/null
+        sudo systemctl disable arozos.service 2>/dev/null
+        sudo rm -f /etc/systemd/system/arozos.service 2>/dev/null
+        sudo systemctl daemon-reload
+
+        # Uninstall ArozOS
+        sudo rm -rf ~/arozos
+
+        sync && sleep 3
+        echo -e "${SUCCESS} ArozOS uninstallation successful."
         ;;
     *) error_msg "Invalid input parameter: [ ${@} ]" ;;
     esac
